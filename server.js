@@ -84,6 +84,17 @@ db.exec(`
     FOREIGN KEY (user_id) REFERENCES users(id),
     FOREIGN KEY (product_id) REFERENCES products(id)
   );
+
+  CREATE TABLE IF NOT EXISTS addresses (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
+    phone TEXT NOT NULL,
+    address TEXT NOT NULL,
+    is_default INTEGER DEFAULT 0,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
 `);
 
 // Seed data
@@ -277,6 +288,13 @@ if (productCount === 0) {
     insertOrder.run(o.user_id, o.items, o.total_price, o.recipient_name, o.recipient_phone, o.recipient_address, o.delivery_date, o.greeting_card, o.status, o.created_at);
   }
 
+  const addrCount = db.prepare('SELECT COUNT(*) as count FROM addresses').get().count;
+  if (addrCount === 0) {
+    db.prepare('INSERT INTO addresses (user_id, name, phone, address, is_default) VALUES (?, ?, ?, ?, ?)').run(1, '小明', '13800138000', '北京市朝阳区建国路88号SOHO现代城A座1801室', 1);
+    db.prepare('INSERT INTO addresses (user_id, name, phone, address, is_default) VALUES (?, ?, ?, ?, ?)').run(1, '妈妈', '13900139000', '上海市浦东新区陆家嘴环路1000号恒生银行大厦25楼', 0);
+    db.prepare('INSERT INTO addresses (user_id, name, phone, address, is_default) VALUES (?, ?, ?, ?, ?)').run(1, '公司前台', '13700137000', '广州市天河区珠江新城华夏路10号富力中心3205室', 0);
+  }
+
   console.log('Seed data inserted successfully.');
 }
 
@@ -443,6 +461,94 @@ app.get('/api/favorites/check', (req, res) => {
   const { user_id, product_id } = req.query;
   const fav = db.prepare('SELECT * FROM favorites WHERE user_id = ? AND product_id = ?').get(user_id || 1, product_id);
   res.json({ isFavorite: !!fav });
+});
+
+// ==================== Addresses ====================
+
+app.get('/api/addresses', (req, res) => {
+  const { user_id } = req.query;
+  const addresses = db.prepare('SELECT * FROM addresses WHERE user_id = ? ORDER BY is_default DESC, created_at DESC').all(user_id || 1);
+  res.json(addresses);
+});
+
+app.get('/api/addresses/:id', (req, res) => {
+  const addr = db.prepare('SELECT * FROM addresses WHERE id = ?').get(req.params.id);
+  if (!addr) return res.status(404).json({ error: '地址不存在' });
+  res.json(addr);
+});
+
+app.post('/api/addresses', (req, res) => {
+  try {
+    const { user_id, name, phone, address, is_default } = req.body;
+    const uid = user_id || 1;
+
+    if (is_default) {
+      db.prepare('UPDATE addresses SET is_default = 0 WHERE user_id = ?').run(uid);
+    }
+
+    const count = db.prepare('SELECT COUNT(*) as count FROM addresses WHERE user_id = ?').get(uid).count;
+    const setDefault = count === 0 ? 1 : (is_default ? 1 : 0);
+
+    const result = db.prepare(`
+      INSERT INTO addresses (user_id, name, phone, address, is_default)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(uid, name, phone, address, setDefault);
+
+    res.json({ success: true, id: result.lastInsertRowid });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/addresses/:id', (req, res) => {
+  try {
+    const existing = db.prepare('SELECT * FROM addresses WHERE id = ?').get(req.params.id);
+    if (!existing) return res.status(404).json({ error: '地址不存在' });
+
+    const { name, phone, address, is_default } = req.body;
+
+    if (is_default) {
+      db.prepare('UPDATE addresses SET is_default = 0 WHERE user_id = ?').run(existing.user_id);
+    }
+
+    db.prepare(`
+      UPDATE addresses SET name=?, phone=?, address=?, is_default=?
+      WHERE id=?
+    `).run(name || existing.name, phone || existing.phone, address || existing.address, is_default ? 1 : existing.is_default, req.params.id);
+
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/addresses/:id', (req, res) => {
+  const existing = db.prepare('SELECT * FROM addresses WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '地址不存在' });
+
+  const wasDefault = existing.is_default;
+  const userId = existing.user_id;
+
+  db.prepare('DELETE FROM addresses WHERE id = ?').run(req.params.id);
+
+  if (wasDefault) {
+    const first = db.prepare('SELECT * FROM addresses WHERE user_id = ? ORDER BY created_at ASC LIMIT 1').get(userId);
+    if (first) {
+      db.prepare('UPDATE addresses SET is_default = 1 WHERE id = ?').run(first.id);
+    }
+  }
+
+  res.json({ success: true });
+});
+
+app.put('/api/addresses/:id/default', (req, res) => {
+  const existing = db.prepare('SELECT * FROM addresses WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: '地址不存在' });
+
+  db.prepare('UPDATE addresses SET is_default = 0 WHERE user_id = ?').run(existing.user_id);
+  db.prepare('UPDATE addresses SET is_default = 1 WHERE id = ?').run(req.params.id);
+
+  res.json({ success: true });
 });
 
 // Upload endpoint

@@ -32,6 +32,8 @@ function navigateTo(page, pushState = true) {
     case 'cart': renderCart(); break;
     case 'checkout': renderCheckout(); break;
     case 'orders': loadOrders(); break;
+    case 'addresses': loadAddresses(); break;
+    case 'address-select': loadAddressSelect(); break;
     case 'favorites': loadFavorites(); break;
     case 'admin': loadAdmin(); break;
   }
@@ -326,109 +328,6 @@ function removeCartItem(idx) {
   saveCart();
   renderCart();
   showToast('已删除');
-}
-
-// ==================== Checkout ====================
-function renderCheckout() {
-  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  const today = new Date().toISOString().split('T')[0];
-
-  document.getElementById('checkout-content').innerHTML = `
-    <div class="checkout-section">
-      <h3>📍 收货信息</h3>
-      <div class="form-group">
-        <label>收花人姓名</label>
-        <input type="text" id="recipient-name" placeholder="请输入收花人姓名">
-      </div>
-      <div class="form-group">
-        <label>联系电话</label>
-        <input type="tel" id="recipient-phone" placeholder="请输入收花人手机号">
-      </div>
-      <div class="form-group">
-        <label>配送地址</label>
-        <input type="text" id="recipient-address" placeholder="请输入详细配送地址">
-      </div>
-      <div class="form-group">
-        <label>期望配送日期</label>
-        <input type="date" id="delivery-date" min="${today}">
-      </div>
-    </div>
-
-    <div class="checkout-section">
-      <h3>🛒 订单商品</h3>
-      <div class="order-items-summary">
-        ${cart.map(item => `
-          <div class="item">
-            <span>${item.name} × ${item.quantity}</span>
-            <span>¥${item.price * item.quantity}</span>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-
-    <div class="checkout-section">
-      <h3>💌 贺卡寄语</h3>
-      <div class="greeting-card-box">
-        <textarea id="greeting-card" placeholder="写一句祝福的话吧，我们会附在花束中..."></textarea>
-      </div>
-    </div>
-
-    <div class="pay-total">
-      <p>需支付</p>
-      <div class="amount">${total}</div>
-    </div>
-
-    <button class="pay-btn" onclick="submitOrder()">确认支付 ¥${total}</button>
-  `;
-}
-
-async function submitOrder() {
-  const name = document.getElementById('recipient-name').value.trim();
-  const phone = document.getElementById('recipient-phone').value.trim();
-  const address = document.getElementById('recipient-address').value.trim();
-  const date = document.getElementById('delivery-date').value;
-  const card = document.getElementById('greeting-card').value.trim();
-
-  if (!name) { showToast('请输入收花人姓名'); return; }
-  if (!phone) { showToast('请输入联系电话'); return; }
-  if (!address) { showToast('请输入配送地址'); return; }
-  if (!date) { showToast('请选择配送日期'); return; }
-
-  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
-
-  try {
-    const res = await fetch('/api/orders', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_id: USER_ID,
-        items: cart,
-        total_price: total,
-        recipient_name: name,
-        recipient_phone: phone,
-        recipient_address: address,
-        delivery_date: date,
-        greeting_card: card
-      })
-    });
-    const data = await res.json();
-    if (data.success) {
-      cart = [];
-      saveCart();
-      document.getElementById('order-success-content').innerHTML = `
-        <div class="icon">🎉</div>
-        <h2>支付成功！</h2>
-        <p>订单号：#${data.id}<br>您的花束将在${date}准时送达</p>
-        <div class="btns">
-          <button style="background:linear-gradient(135deg,var(--pink-4),var(--pink-6));color:#fff" onclick="navigateTo('orders')">查看订单</button>
-          <button style="background:#fff;color:var(--pink-6);border:1.5px solid var(--pink-3)" onclick="navigateTo('home')">继续逛逛</button>
-        </div>
-      `;
-      navigateTo('order-success');
-    }
-  } catch (err) {
-    showToast('下单失败，请重试');
-  }
 }
 
 // ==================== Orders ====================
@@ -731,6 +630,367 @@ function showConfirm(msg, onConfirm) {
     overlay.remove();
     onConfirm();
   };
+}
+
+// ==================== Addresses ====================
+let _addressModalMode = 'manage';
+let _editingAddressId = null;
+let _selectedAddressId = null;
+
+async function loadAddresses() {
+  const container = document.getElementById('addresses-content');
+  try {
+    const res = await fetch(`/api/addresses?user_id=${USER_ID}`);
+    const addresses = await res.json();
+
+    if (addresses.length === 0) {
+      container.innerHTML = '<div class="empty-state"><div class="icon">📍</div><p>还没有收货地址</p><p style="font-size:12px;margin-top:6px">添加一个方便下次下单吧~</p></div>';
+      return;
+    }
+
+    container.innerHTML = `<div class="address-list">${addresses.map(addr => `
+      <div class="address-card fade-in">
+        <div class="address-info">
+          <div class="address-top">
+            <span class="address-name">${addr.name}</span>
+            <span class="address-phone">${addr.phone}</span>
+            ${addr.is_default ? '<span class="default-tag">默认</span>' : ''}
+          </div>
+          <div class="address-detail">${addr.address}</div>
+        </div>
+        <div class="address-actions">
+          ${!addr.is_default ? `<button class="addr-action-btn" onclick="setDefaultAddress(${addr.id})">设为默认</button>` : ''}
+          <button class="addr-action-btn" onclick="showAddressModal(${addr.id})">编辑</button>
+          <button class="addr-action-btn addr-delete" onclick="deleteAddress(${addr.id})">删除</button>
+        </div>
+      </div>
+    `).join('')}</div>`;
+  } catch (err) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">⚠️</div><p>加载失败，请重试</p></div>';
+  }
+}
+
+async function loadAddressSelect() {
+  const container = document.getElementById('address-select-content');
+  try {
+    const res = await fetch(`/api/addresses?user_id=${USER_ID}`);
+    const addresses = await res.json();
+
+    if (addresses.length === 0) {
+      container.innerHTML = '<div class="empty-state"><div class="icon">📍</div><p>还没有收货地址</p><p style="font-size:12px;margin-top:6px">请先新增一个收货地址</p></div>';
+      return;
+    }
+
+    container.innerHTML = `<div class="address-list">${addresses.map(addr => `
+      <div class="address-card fade-in address-select-card ${_selectedAddressId === addr.id ? 'selected' : ''}" onclick="selectAddress(${addr.id})">
+        <div class="address-info">
+          <div class="address-top">
+            <span class="address-name">${addr.name}</span>
+            <span class="address-phone">${addr.phone}</span>
+            ${addr.is_default ? '<span class="default-tag">默认</span>' : ''}
+          </div>
+          <div class="address-detail">${addr.address}</div>
+        </div>
+        <div class="address-radio">
+          <div class="radio-circle ${_selectedAddressId === addr.id ? 'checked' : ''}">${_selectedAddressId === addr.id ? '✓' : ''}</div>
+        </div>
+      </div>
+    `).join('')}</div>
+    <button class="address-confirm-btn" onclick="confirmAddressSelection()" ${!_selectedAddressId ? 'disabled' : ''}>确认使用此地址</button>`;
+  } catch (err) {
+    container.innerHTML = '<div class="empty-state"><div class="icon">⚠️</div><p>加载失败，请重试</p></div>';
+  }
+}
+
+function selectAddress(id) {
+  _selectedAddressId = id;
+  loadAddressSelect();
+}
+
+async function confirmAddressSelection() {
+  if (!_selectedAddressId) return;
+  try {
+    const res = await fetch(`/api/addresses/${_selectedAddressId}`);
+    const addr = await res.json();
+    window._selectedAddress = addr;
+    navigateTo('checkout');
+  } catch (err) {
+    showToast('获取地址失败');
+  }
+}
+
+function showAddressModal(addressId = null, mode = 'manage') {
+  _addressModalMode = mode;
+  _editingAddressId = addressId;
+  const modal = document.getElementById('modal-content');
+  const isEdit = !!addressId;
+
+  let addr = { name: '', phone: '', address: '', is_default: 0 };
+  if (isEdit) {
+    const cards = document.querySelectorAll('.address-card');
+    for (const card of cards) {
+      const editBtn = card.querySelector(`[onclick="showAddressModal(${addressId})"]`);
+      if (editBtn) {
+        addr.name = card.querySelector('.address-name').textContent;
+        addr.phone = card.querySelector('.address-phone').textContent;
+        addr.address = card.querySelector('.address-detail').textContent;
+        addr.is_default = card.querySelector('.default-tag') ? 1 : 0;
+        break;
+      }
+    }
+  }
+
+  modal.innerHTML = `
+    <h3>${isEdit ? '编辑地址' : '新增地址'}</h3>
+    <form id="address-form">
+      <div class="form-group">
+        <label>收花人姓名</label>
+        <input type="text" name="name" value="${addr.name}" required placeholder="请输入姓名">
+      </div>
+      <div class="form-group">
+        <label>联系电话</label>
+        <input type="tel" name="phone" value="${addr.phone}" required placeholder="请输入手机号" maxlength="11">
+      </div>
+      <div class="form-group">
+        <label>详细地址</label>
+        <textarea name="address" required placeholder="请输入详细配送地址">${addr.address}</textarea>
+      </div>
+      <div class="form-group" style="display:flex;align-items:center;gap:8px">
+        <input type="checkbox" name="is_default" id="is_default" ${addr.is_default ? 'checked' : ''} style="width:auto">
+        <label for="is_default" style="margin:0;font-size:13px;color:var(--text2)">设为默认地址</label>
+      </div>
+      <div class="btn-row">
+        <button type="button" class="btn-cancel" onclick="closeModal()">取消</button>
+        <button type="submit" class="btn-confirm">${isEdit ? '保存修改' : '确认添加'}</button>
+      </div>
+    </form>
+  `;
+
+  document.getElementById('modal-overlay').style.display = 'flex';
+
+  document.getElementById('address-form').onsubmit = async (e) => {
+    e.preventDefault();
+    const form = e.target;
+    const name = form.name.value.trim();
+    const phone = form.phone.value.trim();
+    const address = form.address.value.trim();
+    const is_default = form.is_default.checked;
+
+    if (!name) { showToast('请输入姓名'); return; }
+    if (!/^1[3-9]\d{9}$/.test(phone)) { showToast('请输入正确的手机号'); return; }
+    if (!address) { showToast('请输入详细地址'); return; }
+
+    const url = isEdit ? `/api/addresses/${addressId}` : '/api/addresses';
+    const method = isEdit ? 'PUT' : 'POST';
+
+    try {
+      const res = await fetch(url, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: USER_ID, name, phone, address, is_default })
+      });
+      const data = await res.json();
+      if (data.success) {
+        closeModal();
+        showToast(isEdit ? '地址已更新' : '地址已添加');
+        if (_addressModalMode === 'select') {
+          if (!isEdit) _selectedAddressId = data.id;
+          loadAddressSelect();
+        } else {
+          loadAddresses();
+        }
+      } else {
+        showToast(data.error || '操作失败');
+      }
+    } catch (err) {
+      showToast('操作失败');
+    }
+  };
+}
+
+async function setDefaultAddress(id) {
+  try {
+    const res = await fetch(`/api/addresses/${id}/default`, { method: 'PUT' });
+    const data = await res.json();
+    if (data.success) {
+      showToast('已设为默认地址');
+      loadAddresses();
+    }
+  } catch (err) {
+    showToast('操作失败');
+  }
+}
+
+function deleteAddress(id) {
+  showConfirm('确定要删除这个地址吗？', async () => {
+    try {
+      const res = await fetch(`/api/addresses/${id}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        showToast('地址已删除');
+        loadAddresses();
+      }
+    } catch (err) {
+      showToast('删除失败');
+    }
+  });
+}
+
+// ==================== Checkout (modified) ====================
+function renderCheckout() {
+  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+  const today = new Date().toISOString().split('T')[0];
+
+  let selectedAddrHtml = '';
+  let selectedName = '';
+  let selectedPhone = '';
+  let selectedAddress = '';
+
+  if (window._selectedAddress) {
+    const a = window._selectedAddress;
+    selectedName = a.name;
+    selectedPhone = a.phone;
+    selectedAddress = a.address;
+    selectedAddrHtml = `
+      <div class="selected-address-box" onclick="navigateTo('address-select')">
+        <div class="sa-icon">📍</div>
+        <div class="sa-info">
+          <div class="sa-top">
+            <span class="sa-name">${a.name}</span>
+            <span class="sa-phone">${a.phone}</span>
+            ${a.is_default ? '<span class="default-tag">默认</span>' : ''}
+          </div>
+          <div class="sa-detail">${a.address}</div>
+        </div>
+        <div class="sa-arrow">›</div>
+      </div>
+    `;
+  } else {
+    selectedAddrHtml = `
+      <div class="select-address-entry" onclick="navigateTo('address-select')">
+        <div class="entry-left">
+          <span class="entry-icon">📍</span>
+          <span class="entry-text">选择收货地址</span>
+        </div>
+        <div class="entry-arrow">›</div>
+      </div>
+    `;
+  }
+
+  document.getElementById('checkout-content').innerHTML = `
+    <div class="checkout-section">
+      <h3>📍 收货信息</h3>
+      ${selectedAddrHtml}
+      <div class="form-group" style="margin-top:14px">
+        <label>收花人姓名</label>
+        <input type="text" id="recipient-name" placeholder="请输入收花人姓名" value="${selectedName}">
+      </div>
+      <div class="form-group">
+        <label>联系电话</label>
+        <input type="tel" id="recipient-phone" placeholder="请输入收花人手机号" value="${selectedPhone}">
+      </div>
+      <div class="form-group">
+        <label>配送地址</label>
+        <input type="text" id="recipient-address" placeholder="请输入详细配送地址" value="${selectedAddress}">
+      </div>
+      <div class="form-group">
+        <label>期望配送日期</label>
+        <input type="date" id="delivery-date" min="${today}">
+      </div>
+    </div>
+
+    <div class="checkout-section">
+      <h3>🛒 订单商品</h3>
+      <div class="order-items-summary">
+        ${cart.map(item => `
+          <div class="item">
+            <span>${item.name} × ${item.quantity}</span>
+            <span>¥${item.price * item.quantity}</span>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+
+    <div class="checkout-section">
+      <h3>💌 贺卡寄语</h3>
+      <div class="greeting-card-box">
+        <textarea id="greeting-card" placeholder="写一句祝福的话吧，我们会附在花束中..."></textarea>
+      </div>
+    </div>
+
+    <div class="pay-total">
+      <p>需支付</p>
+      <div class="amount">${total}</div>
+    </div>
+
+    <button class="pay-btn" onclick="submitOrder()">确认支付 ¥${total}</button>
+  `;
+
+  if (!window._selectedAddress) {
+    (async () => {
+      try {
+        const res = await fetch(`/api/addresses?user_id=${USER_ID}`);
+        const addrs = await res.json();
+        const def = addrs.find(a => a.is_default) || addrs[0];
+        if (def) {
+          window._selectedAddress = def;
+          _selectedAddressId = def.id;
+          renderCheckout();
+        }
+      } catch (e) {}
+    })();
+  }
+}
+
+async function submitOrder() {
+  const name = document.getElementById('recipient-name').value.trim();
+  const phone = document.getElementById('recipient-phone').value.trim();
+  const address = document.getElementById('recipient-address').value.trim();
+  const date = document.getElementById('delivery-date').value;
+  const card = document.getElementById('greeting-card').value.trim();
+
+  if (!name) { showToast('请输入收花人姓名'); return; }
+  if (!phone) { showToast('请输入联系电话'); return; }
+  if (!address) { showToast('请输入配送地址'); return; }
+  if (!date) { showToast('请选择配送日期'); return; }
+
+  const total = cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
+
+  try {
+    const res = await fetch('/api/orders', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        user_id: USER_ID,
+        items: cart,
+        total_price: total,
+        recipient_name: name,
+        recipient_phone: phone,
+        recipient_address: address,
+        delivery_date: date,
+        greeting_card: card
+      })
+    });
+    const data = await res.json();
+    if (data.success) {
+      cart = [];
+      saveCart();
+      window._selectedAddress = null;
+      _selectedAddressId = null;
+      document.getElementById('order-success-content').innerHTML = `
+        <div class="icon">🎉</div>
+        <h2>支付成功！</h2>
+        <p>订单号：#${data.id}<br>您的花束将在${date}准时送达</p>
+        <div class="btns">
+          <button style="background:linear-gradient(135deg,var(--pink-4),var(--pink-6));color:#fff" onclick="navigateTo('orders')">查看订单</button>
+          <button style="background:#fff;color:var(--pink-6);border:1.5px solid var(--pink-3)" onclick="navigateTo('home')">继续逛逛</button>
+        </div>
+      `;
+      navigateTo('order-success');
+    }
+  } catch (err) {
+    showToast('下单失败，请重试');
+  }
 }
 
 // ==================== Init ====================
